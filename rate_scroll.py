@@ -581,6 +581,32 @@ def send_discord_alert(alerts: list, run_time: datetime):
         log.error(f"Discord alert failed: {e}")
 
 
+def send_discord_xlsx(run_time: datetime, checkin_date):
+    """Upload the current day's Rate Shop xlsx to Discord after each scrape."""
+    if not DISCORD_WEBHOOK:
+        return
+
+    xlsx_path = DATA_DIR / f"Rate_Shop_{checkin_date.strftime('%Y-%m-%d')}.xlsx"
+    if not xlsx_path.exists():
+        return
+
+    sd_time = run_time.strftime('%I:%M %p').lstrip('0')
+    message = f"📊 **Rate Shop** — {checkin_date.strftime('%m/%d')} | Updated {sd_time}"
+
+    try:
+        with open(xlsx_path, 'rb') as f:
+            resp = requests.post(
+                DISCORD_WEBHOOK,
+                data={"content": message},
+                files={"file": (xlsx_path.name, f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                timeout=15,
+            )
+        resp.raise_for_status()
+        log.info(f"Discord: xlsx uploaded — {xlsx_path.name}")
+    except Exception as e:
+        log.error(f"Discord xlsx upload failed: {e}")
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -645,6 +671,9 @@ def main():
     write_csv(results, run_time)
     write_xlsx(results, run_time, checkin_date)
     write_sheets(results, run_time)
+
+    # Upload xlsx to Discord
+    send_discord_xlsx(run_time, checkin_date)
 
     # Check alerts
     if not args.no_alerts:

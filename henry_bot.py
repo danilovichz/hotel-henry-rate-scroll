@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 SD_TZ = ZoneInfo('America/Los_Angeles')  # San Diego — handles PST/PDT automatically
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -323,6 +323,31 @@ async def cmd_help(ctx):
 • `!henry what does the comp set look like this weekend?`
 • `!henry DoubleTree is sold out, what should my rate be?`"""
     await ctx.send(help_text)
+
+
+# ─── Built-in Scheduler ───────────────────────────────────────────────────────
+
+@bot.event
+async def on_ready():
+    log.info(f"Henry bot online — logged in as {bot.user}")
+    if not scheduled_scrape.is_running():
+        scheduled_scrape.start()
+        log.info("Scrape scheduler started — every 30 min, 8am–2:30am San Diego")
+
+
+@tasks.loop(minutes=30)
+async def scheduled_scrape():
+    """Run the rate scraper every 30 minutes during San Diego operating hours."""
+    sd_now = datetime.now(SD_TZ)
+    sd_hour, sd_min = sd_now.hour, sd_now.minute
+    in_hours = sd_hour >= 8 or sd_hour <= 1 or (sd_hour == 2 and sd_min <= 30)
+
+    if not in_hours:
+        log.info(f"Scrape skipped — outside hours ({sd_now.strftime('%I:%M %p')} SD)")
+        return
+
+    log.info(f"Scheduled scrape starting — {sd_now.strftime('%I:%M %p')} SD")
+    await asyncio.to_thread(live_scrape_tonight)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
