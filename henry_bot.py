@@ -16,6 +16,7 @@ Deploy (Railway):
 """
 
 import os
+import sys
 import csv
 import asyncio
 import logging
@@ -24,6 +25,11 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Import write_xlsx directly so xlsx generation runs in the bot's own process
+# (avoids silent openpyxl failures in subprocess)
+sys.path.insert(0, str(Path(__file__).parent))
+from rate_scroll import write_xlsx
 
 SD_TZ = ZoneInfo('America/Los_Angeles')  # San Diego — handles PST/PDT automatically
 
@@ -104,6 +110,17 @@ def live_scrape_tonight() -> tuple[list[dict], Path | None]:
         log.info(f"Scrape OK — xlsx exists: {xlsx_path.exists()} | data_dir contents: {list(DATA_DIR.iterdir()) if DATA_DIR.exists() else 'DIR MISSING'}")
 
     rows, _ = load_latest_rates()
+
+    # Write xlsx in the bot's own process — guarantees same env/packages
+    if rows:
+        try:
+            run_time = datetime.now(SD_TZ)
+            checkin = datetime.strptime(today, '%Y-%m-%d').date()
+            write_xlsx(rows, run_time, checkin)
+            log.info(f"xlsx written by bot process — {xlsx_path}")
+        except Exception as e:
+            log.error(f"xlsx write failed in bot process: {e}")
+
     return rows, xlsx_path if xlsx_path.exists() else None
 
 
