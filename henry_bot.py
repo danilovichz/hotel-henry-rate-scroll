@@ -75,16 +75,27 @@ def load_latest_rates(target_date: str = None) -> tuple[list[dict], bool]:
     return latest_rows, is_stale
 
 
-def live_scrape_tonight() -> list[dict]:
-    """Trigger a live Firecrawl scrape right now. Used when data is stale or !rates live."""
-    import subprocess
+def live_scrape_tonight() -> tuple[list[dict], Path | None]:
+    """Trigger a live Firecrawl scrape. Returns (rates, xlsx_path)."""
+    import subprocess, sys
     log.info("Triggering live scrape...")
-    subprocess.run(
-        ['python3', str(Path(__file__).parent / 'rate_scroll.py'), '--no-alerts'],
-        capture_output=True
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).parent / 'rate_scroll.py'), '--no-alerts'],
+        capture_output=True, text=True
     )
+    if result.returncode != 0:
+        log.error(f"Scrape failed (exit {result.returncode}):\n{result.stderr[-500:]}")
+    else:
+        log.info("Scrape completed OK")
+        if result.stdout:
+            log.info(result.stdout[-300:])
+
     rows, _ = load_latest_rates()
-    return rows
+
+    # Find today's xlsx
+    today = datetime.now(SD_TZ).date().strftime('%Y-%m-%d')
+    xlsx_path = DATA_DIR / f'Rate_Shop_{today}.xlsx'
+    return rows, xlsx_path if xlsx_path.exists() else None
 
 
 def load_rate_history(target_date: str = None, max_runs: int = 10) -> list[dict]:
@@ -275,21 +286,25 @@ async def cmd_rates(ctx, arg: str = None):
     if force_live:
         await ctx.send("🔄 Scraping live data now... (~60 sec)")
         async with ctx.typing():
-            rates = await asyncio.to_thread(live_scrape_tonight)
+            rates, xlsx_path = await asyncio.to_thread(live_scrape_tonight)
         await ctx.send(format_rates_table(rates, target_date))
+        if xlsx_path:
+            await ctx.send(
+                file=discord.File(str(xlsx_path), filename=xlsx_path.name),
+                content="📊 Updated Rate Shop:"
+            )
         return
 
     rates, is_stale = load_latest_rates(target_date)
 
     if is_stale and rates:
-        # Data exists but is old — auto-trigger live scrape
         await ctx.send("⏳ Data is stale (>45 min). Pulling fresh rates...")
         async with ctx.typing():
-            rates = await asyncio.to_thread(live_scrape_tonight)
+            rates, _ = await asyncio.to_thread(live_scrape_tonight)
     elif not rates:
         await ctx.send("⏳ No data yet for today. Pulling fresh rates...")
         async with ctx.typing():
-            rates = await asyncio.to_thread(live_scrape_tonight)
+            rates, _ = await asyncio.to_thread(live_scrape_tonight)
 
     await ctx.send(format_rates_table(rates, target_date))
 
@@ -347,7 +362,9 @@ async def scheduled_scrape():
         return
 
     log.info(f"Scheduled scrape starting — {sd_now.strftime('%I:%M %p')} SD")
-    await asyncio.to_thread(live_scrape_tonight)
+    rates, xlsx_path = await asyncio.to_thread(live_scrape_tonight)
+    if not rates:
+        log.warning("Scheduled scrape returned no data — check rate_scroll.py logs")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
