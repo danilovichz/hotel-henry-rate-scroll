@@ -615,6 +615,7 @@ def main():
     parser.add_argument('--test', action='store_true', help='Hampton Inn only, print results, no CSV/Sheets/alerts written')
     parser.add_argument('--no-alerts', action='store_true', help='Skip Discord alerts this run')
     parser.add_argument('--force', action='store_true', help='Bypass operating hours check (used when called from bot)')
+    parser.add_argument('--no-xlsx', action='store_true', help='Skip xlsx write and Discord upload (bot handles it)')
     args = parser.parse_args()
 
     if not FIRECRAWL_API_KEY:
@@ -670,11 +671,13 @@ def main():
 
     # Write outputs
     write_csv(results, run_time)
-    write_xlsx(results, run_time, checkin_date)
+    if not args.no_xlsx:
+        write_xlsx(results, run_time, checkin_date)
     write_sheets(results, run_time)
 
-    # Upload xlsx to Discord
-    send_discord_xlsx(run_time, checkin_date)
+    # Upload xlsx to Discord (skipped when bot handles it)
+    if not args.no_xlsx:
+        send_discord_xlsx(run_time, checkin_date)
 
     # Check alerts
     if not args.no_alerts:

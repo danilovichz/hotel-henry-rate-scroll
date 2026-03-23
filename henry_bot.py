@@ -90,7 +90,7 @@ def live_scrape_tonight() -> tuple[list[dict], Path | None]:
 
     log.info(f"Triggering live scrape... script={script} data_dir={DATA_DIR}")
     result = subprocess.run(
-        [sys.executable, str(script), '--no-alerts', '--force'],
+        [sys.executable, str(script), '--no-alerts', '--force', '--no-xlsx'],
         capture_output=True, text=True, timeout=180
     )
 
