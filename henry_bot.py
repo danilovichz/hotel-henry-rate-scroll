@@ -78,26 +78,32 @@ def load_latest_rates(target_date: str = None) -> tuple[list[dict], bool]:
 def live_scrape_tonight() -> tuple[list[dict], Path | None]:
     """Trigger a live Firecrawl scrape. Returns (rates, xlsx_path)."""
     import subprocess, sys
-    log.info("Triggering live scrape...")
-    result = subprocess.run(
-        [sys.executable, str(Path(__file__).parent / 'rate_scroll.py'), '--no-alerts', '--force'],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        err = result.stderr[-600:] if result.stderr else result.stdout[-600:]
-        log.error(f"Scrape failed (exit {result.returncode}):\n{err}")
-        # Post error to Discord so we can debug without Railway dashboard
-        webhook = os.getenv('HENRY_DISCORD_WEBHOOK', '')
-        if webhook:
-            requests.post(webhook, json={"content": f"⚠️ **Scrape failed** (exit {result.returncode}):\n```{err[-400:]}```"}, timeout=5)
-    else:
-        log.info("Scrape completed OK")
-
-    rows, _ = load_latest_rates()
-
-    # Find today's xlsx
+    script = Path(__file__).parent / 'rate_scroll.py'
     today = datetime.now(SD_TZ).date().strftime('%Y-%m-%d')
     xlsx_path = DATA_DIR / f'Rate_Shop_{today}.xlsx'
+
+    log.info(f"Triggering live scrape... script={script} data_dir={DATA_DIR}")
+    result = subprocess.run(
+        [sys.executable, str(script), '--no-alerts', '--force'],
+        capture_output=True, text=True, timeout=180
+    )
+
+    # Always log full output for debugging
+    if result.stdout:
+        log.info(f"Scrape stdout:\n{result.stdout[-800:]}")
+    if result.stderr:
+        log.info(f"Scrape stderr:\n{result.stderr[-800:]}")
+
+    webhook = os.getenv('HENRY_DISCORD_WEBHOOK', '')
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or 'no output')[-400:]
+        log.error(f"Scrape failed (exit {result.returncode})")
+        if webhook:
+            requests.post(webhook, json={"content": f"⚠️ **Scrape error** (exit {result.returncode}):\n```{err}```"}, timeout=5)
+    else:
+        log.info(f"Scrape OK — xlsx exists: {xlsx_path.exists()} | data_dir contents: {list(DATA_DIR.iterdir()) if DATA_DIR.exists() else 'DIR MISSING'}")
+
+    rows, _ = load_latest_rates()
     return rows, xlsx_path if xlsx_path.exists() else None
 
 
