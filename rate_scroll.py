@@ -614,6 +614,7 @@ def main():
     parser.add_argument('--date', help='Check-in date YYYY-MM-DD (default: today)')
     parser.add_argument('--test', action='store_true', help='Hampton Inn only, print results, no CSV/Sheets/alerts written')
     parser.add_argument('--no-alerts', action='store_true', help='Skip Discord alerts this run')
+    parser.add_argument('--force', action='store_true', help='Bypass operating hours check (used when called from bot)')
     args = parser.parse_args()
 
     if not FIRECRAWL_API_KEY:
@@ -621,8 +622,8 @@ def main():
         sys.exit(1)
 
     # Operating hours check: 8:00 AM – 2:30 AM San Diego time
-    # Skip silently outside these hours (unless --test or --date override)
-    if not args.test and not args.date:
+    # Skip silently outside these hours (unless --test, --date, or --force override)
+    if not args.test and not args.date and not args.force:
         sd_now = datetime.now(SD_TZ)
         sd_hour, sd_min = sd_now.hour, sd_now.minute
         in_hours = sd_hour >= 8 or sd_hour <= 1 or (sd_hour == 2 and sd_min <= 30)

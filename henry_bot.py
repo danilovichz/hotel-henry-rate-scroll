@@ -80,15 +80,18 @@ def live_scrape_tonight() -> tuple[list[dict], Path | None]:
     import subprocess, sys
     log.info("Triggering live scrape...")
     result = subprocess.run(
-        [sys.executable, str(Path(__file__).parent / 'rate_scroll.py'), '--no-alerts'],
+        [sys.executable, str(Path(__file__).parent / 'rate_scroll.py'), '--no-alerts', '--force'],
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        log.error(f"Scrape failed (exit {result.returncode}):\n{result.stderr[-500:]}")
+        err = result.stderr[-600:] if result.stderr else result.stdout[-600:]
+        log.error(f"Scrape failed (exit {result.returncode}):\n{err}")
+        # Post error to Discord so we can debug without Railway dashboard
+        webhook = os.getenv('HENRY_DISCORD_WEBHOOK', '')
+        if webhook:
+            requests.post(webhook, json={"content": f"⚠️ **Scrape failed** (exit {result.returncode}):\n```{err[-400:]}```"}, timeout=5)
     else:
         log.info("Scrape completed OK")
-        if result.stdout:
-            log.info(result.stdout[-300:])
 
     rows, _ = load_latest_rates()
 
