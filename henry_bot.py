@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 # Import write_xlsx directly so xlsx generation runs in the bot's own process
 # (avoids silent openpyxl failures in subprocess)
 sys.path.insert(0, str(Path(__file__).parent))
-from rate_scroll import write_xlsx
+from rate_scroll import write_xlsx, write_epc_sheet, send_discord_xlsx
 
 SD_TZ = ZoneInfo('America/Los_Angeles')  # San Diego — handles PST/PDT automatically
 
@@ -90,7 +90,7 @@ def live_scrape_tonight() -> tuple[list[dict], Path | None]:
 
     log.info(f"Triggering live scrape... script={script} data_dir={DATA_DIR}")
     result = subprocess.run(
-        [sys.executable, str(script), '--no-alerts', '--force', '--no-xlsx'],
+        [sys.executable, str(script), '--force', '--no-xlsx'],
         capture_output=True, text=True, timeout=180
     )
 
@@ -118,8 +118,10 @@ def live_scrape_tonight() -> tuple[list[dict], Path | None]:
             checkin = datetime.strptime(today, '%Y-%m-%d').date()
             write_xlsx(rows, run_time, checkin)
             log.info(f"xlsx written by bot process — {xlsx_path}")
+            send_discord_xlsx(run_time, checkin)
+            log.info("xlsx uploaded to Discord")
         except Exception as e:
-            log.error(f"xlsx write failed in bot process: {e}")
+            log.error(f"xlsx write/upload failed in bot process: {e}")
 
     return rows, xlsx_path if xlsx_path.exists() else None
 
@@ -154,23 +156,35 @@ def format_rates_table(rates: list[dict], target_date: str = None) -> str:
     ts = rates[0].get('run_timestamp', 'unknown')
     checkin = rates[0].get('checkin', target_date or 'today')
 
-    lines = [f"**Rate Scroll** — Check-in: `{checkin}` | Last updated: `{ts}`\n"]
+    lines = [f"**Rate Shop** — Check-in: `{checkin}` | Updated: `{ts}`\n"]
     lines.append("```")
-    lines.append(f"{'Hotel':<30} {'Rate':>8}  {'Status':<12}  {'Rooms':>5}")
-    lines.append("─" * 60)
+    lines.append(f"{'Hotel':<28} {'Expedia':>8} {'IHG':>6}  {'Status':<8} {'Kings':>5} {'Queens':>6}")
+    lines.append("─" * 68)
 
     for r in rates:
         name = r.get('hotel_name', '')
         flag = " ◄" if r.get('is_ours') == 'True' else ""
+
+        # Expedia rate
         if r.get('is_sold_out') == 'True':
-            rate_str = "SOLD OUT"
+            exp_str = "SOLD"
         elif r.get('lowest_rate_usd'):
-            rate_str = f"${float(r['lowest_rate_usd']):.0f}"
+            exp_str = f"${float(r['lowest_rate_usd']):.0f}"
         else:
-            rate_str = "N/A"
-        status = r.get('availability_signal', '—')
-        rooms = r.get('rooms_left', '—') or '—'
-        lines.append(f"{name:<30} {rate_str:>8}  {status:<12}  {rooms:>5}{flag}")
+            exp_str = "N/A"
+
+        # IHG rate
+        ihg_family = r.get('ihg_family', 'False')
+        if ihg_family == 'True' or ihg_family is True:
+            ihg_raw = r.get('ihg_rate_usd', '')
+            ihg_str = f"${float(ihg_raw):.0f}" if ihg_raw else "—"
+        else:
+            ihg_str = "X"
+
+        status = r.get('availability_signal', '—')[:8]
+        kings = r.get('kings_available', '—') or '—'
+        queens = r.get('queens_available', '—') or '—'
+        lines.append(f"{name:<28} {exp_str:>8} {ihg_str:>6}  {status:<8} {str(kings):>5} {str(queens):>6}{flag}")
 
     lines.append("```")
     return "\n".join(lines)
@@ -205,7 +219,10 @@ def build_henry_context(question: str) -> str:
             rate_str = f"${float(r['lowest_rate_usd']):.0f}" if r.get('lowest_rate_usd') else "N/A"
         ours = " (OUR HOTEL)" if r.get('is_ours') == 'True' else ""
         rooms = f", {r['rooms_left']} rooms left" if r.get('rooms_left') else ""
-        rate_lines.append(f"- {r['hotel_name']}{ours}: {rate_str} [{r.get('availability_signal', '?')}]{rooms}")
+        kings = f", kings: {r.get('kings_available', '?')}" if r.get('kings_available') else ""
+        queens = f", queens: {r.get('queens_available', '?')}" if r.get('queens_available') else ""
+        ihg = f", IHG: ${float(r['ihg_rate_usd']):.0f}" if r.get('ihg_rate_usd') else ""
+        rate_lines.append(f"- {r['hotel_name']}{ours}: Expedia {rate_str}{ihg} [{r.get('availability_signal', '?')}]{rooms}{kings}{queens}")
 
     # Summarize history for trend context
     history_summary = ""
@@ -221,13 +238,27 @@ def build_henry_context(question: str) -> str:
     context = f"""You are Henry — an AI revenue manager for Holiday Inn Express & Suites San Diego Mission Valley (Hotel Circle).
 
 HOTEL CONTEXT:
-- 156 rooms, IHG franchise, Mission Valley / Hotel Circle area
+- 104 rooms, IHG franchise, Mission Valley / Hotel Circle area
+- Room types: King | King Suite (king + sofa) | Two Queen | Two Queen + sofa | King Jacuzzi (king + sofa + jacuzzi)
 - Floor rate: $109 (never price below this)
 - Currently ~97% average occupancy — the opportunity is ADR optimization, not filling rooms
-- Competitive set: Hampton Inn (primary comp), Courtyard, DoubleTree Hotel Circle, HIE SeaWorld, Legacy Resort
+- Annual room revenue: ~$6.32M | ADR range: $107–$353 (avg ~$170)
+- Competitive set (Rate Shop): HIE SeaWorld, HIE Old Town, HIE Downtown, Courtyard Marriott Mission Valley, Hampton Inn Mission Valley
 - Rate parity required across all OTAs — one rate change propagates everywhere via channel manager
-- Key demand drivers: Padres games, Comic-Con, SDCC, conventions at SDCC, military events, university graduations
-- Rate changes should always go through PMS rack rate (Method 1) — never per-channel promotional adjustments
+- IHG franchise fee: 9% on ALL revenue regardless of channel
+- Expedia cost: 15% commission + 12% IHG = 27% gone before operating costs
+- Key demand drivers: Padres games, Comic-Con, conventions, military events, university graduations, cruise departures, school breaks (Arizona spring break), construction crews, traveling nurses
+
+CRITICAL PRICING PHILOSOPHY — HERD HOTEL:
+- Bobby (owner): "We are a herd of hotels that can't be front runners unless something exceptional is happening."
+- Hotels move in blocks — when one raises, if 2 follow, everyone follows.
+- At this tier (select-service), competitors race to the MIDDLE, not the bottom.
+- Henry follows the market. Henry does NOT recommend raising rates just because one comp is higher.
+- NEVER recommend raising rates when we have 20+ rooms unsold — they need to sell.
+- Hold rate as long as possible on peak days, only drop if pace falls behind.
+- When a comp goes sold out: HOLD rate (don't raise aggressively).
+- When 2+ comps drop: follow the market down.
+- When inventory is high late in the day: recommend adjusting down.
 
 CURRENT RATE DATA (as of {latest_ts}):
 {chr(10).join(rate_lines) if rate_lines else "No data available yet."}
@@ -241,9 +272,12 @@ RESPONSE GUIDELINES:
 - Use real numbers from the data above — never invent rates or availability.
 - Frame recommendations in dollar impact when possible (e.g. "+$20 × 3 rooms = $60 more tonight").
 - Always specify the recommended rate as a number.
-- When suggesting rate changes, recommend adjusting the PMS rack rate — it flows automatically to all channels.
-- Don't panic-match competitors. Diagnose first: is the signal isolated (one comp distressed) or market-wide (real demand weakness)?
-- Consider booking window: for tonight's rates, most bookable demand has already happened. For dates 2–4 weeks out, rate changes have maximum impact.
+- When suggesting rate changes, recommend adjusting the PMS rack rate — it flows to all channels.
+- HERD STRATEGY: Never recommend raising rate just because one comp is higher. Watch what the HERD does.
+- Don't panic-match a single distressed comp. Only follow if 2+ comps are moving.
+- Consider booking window: for tonight's rates, most demand has already happened. For dates 2–4 weeks out, rate changes have maximum impact.
+- When we have lots of rooms unsold, the priority is SELLING, not maximizing rate.
+- Event-based pricing: every 10,000 attendees ≈ +$10. Events stack. Local events (Padres) weight lower than visitor events (Comic-Con).
 
 User question: {question}"""
 
@@ -355,6 +389,7 @@ async def cmd_help(ctx):
     help_text = """**Henry — AI Revenue Manager**
 
 `!rates` — Tonight's full comp set (latest scrape)
+`!rates live` — Force a fresh scrape right now (~60 sec)
 `!rates 2026-04-12` — Rates for a specific date
 `!henry [question]` — Ask Henry anything
 
@@ -362,11 +397,46 @@ async def cmd_help(ctx):
 • `!henry should I raise my rate tonight?`
 • `!henry Hampton just dropped to $149, what do I do?`
 • `!henry what does the comp set look like this weekend?`
-• `!henry DoubleTree is sold out, what should my rate be?`"""
+• `!henry HIE SeaWorld is sold out, what should our rate be?`
+• `!henry we have 20 rooms left at 7pm, what do you recommend?`"""
     await ctx.send(help_text)
 
 
 # ─── Built-in Scheduler ───────────────────────────────────────────────────────
+
+def run_epc_scrape() -> bool:
+    """Pull EPC forward rates, write to today's Excel, and send to Discord. Returns True on success."""
+    try:
+        import asyncio as _asyncio
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).parent))
+        from collect_epc_rates import scrape_epc
+        from rate_scroll import send_discord_xlsx
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        epc_data = _asyncio.run(scrape_epc())
+        write_epc_sheet(epc_data)
+
+        # Send the full file (Rate Shop + EPC Forward tabs) to Discord
+        now = datetime.now(ZoneInfo('America/Los_Angeles'))
+        send_discord_xlsx(now, now.date())
+
+        log.info("EPC forward rates written and sent to Discord")
+        return True
+    except FileNotFoundError:
+        log.warning("EPC session not set up — run setup_epc_session.py to enable EPC scraping")
+        return False
+    except RuntimeError as e:
+        if "Session expired" in str(e):
+            log.warning("EPC session expired — run setup_epc_session.py to refresh")
+        else:
+            log.error(f"EPC scrape error: {e}")
+        return False
+    except Exception as e:
+        log.error(f"EPC scrape failed: {e}")
+        return False
+
 
 @bot.event
 async def on_ready():
@@ -374,6 +444,19 @@ async def on_ready():
     if not scheduled_scrape.is_running():
         scheduled_scrape.start()
         log.info("Scrape scheduler started — every 30 min, 8am–2:30am San Diego")
+    if not daily_epc_scrape.is_running():
+        daily_epc_scrape.start()
+        log.info("EPC scheduler started — daily at 6 AM San Diego")
+
+
+@tasks.loop(minutes=30)
+async def daily_epc_scrape():
+    """Run EPC forward rate scrape once daily at 6 AM San Diego time."""
+    sd_now = datetime.now(SD_TZ)
+    if sd_now.hour != 6:
+        return
+    log.info("Daily EPC scrape starting — 6 AM San Diego")
+    await asyncio.to_thread(run_epc_scrape)
 
 
 @tasks.loop(minutes=30)
