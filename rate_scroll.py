@@ -40,7 +40,7 @@ from dotenv import load_dotenv
 
 SD_TZ = ZoneInfo('America/Los_Angeles')
 
-load_dotenv('/Users/danizal/dani/aios/.env')
+load_dotenv('/Users/rentamac/dani/aios/.env')
 
 FIRECRAWL_API_KEY = os.getenv('FIRECRAWL_API_KEY')
 FIRECRAWL_URL = 'https://api.firecrawl.dev/v1/scrape'
@@ -618,7 +618,11 @@ def write_xlsx(results: list, run_time: datetime, checkin_date: date):
             ic.value = '—'; ic.font = data_font  # No IHG code set yet
 
         if r.get('is_ours'):
-            our_rooms_left = r.get('total_rooms_available')
+            _raw = r.get('total_rooms_available')
+            try:
+                our_rooms_left = int(_raw) if _raw is not None else None
+            except (ValueError, TypeError):
+                our_rooms_left = None
 
     # ── Row 3: Rooms left to sell (OUR hotel) ─────────────────────────────────
     for col in (exp_col, ihg_col):
@@ -714,9 +718,12 @@ def write_xlsx(results: list, run_time: datetime, checkin_date: date):
         if not row_num:
             continue
 
-        kings  = r.get('kings_available', 0)
-        queens = r.get('queens_available', 0)
-        total  = r.get('total_rooms_available', 0)
+        def _int(v, default=0):
+            try: return int(v)
+            except (ValueError, TypeError): return default
+        kings  = _int(r.get('kings_available', 0))
+        queens = _int(r.get('queens_available', 0))
+        total  = _int(r.get('total_rooms_available', 0))
         sold   = r.get('is_sold_out', False)
 
         # Kings / Queens cell  (e.g.  "K: 3 | Q: 2")
@@ -893,8 +900,47 @@ def write_epc_sheet(epc_data: dict, target_date: date = None):
             write_rate_row(row_num, comp_name, comp_data)
             row_num += 1
 
+    # ── Events section ────────────────────────────────────────────────────────
+    events = epc_data.get('events', [])
+    if events:
+        evt_row = row_num + 1  # one blank row after competitors
+
+        # Section header
+        evt_header = ws.cell(row=evt_row, column=1, value='UPCOMING EVENTS')
+        evt_header.font = Font(bold=True, color='FFFFFF', name='Arial', size=10)
+        evt_header.fill = PatternFill('solid', fgColor='1F3864')
+        evt_header.border = thin_border
+
+        # Column headers
+        evt_row += 1
+        for col, heading in enumerate(['Category', 'Event', 'Dates', 'Attendees'], start=1):
+            c = ws.cell(row=evt_row, column=col)
+            c.value = heading
+            c.font = Font(bold=True, color='FFFFFF', name='Arial', size=9)
+            c.fill = PatternFill('solid', fgColor='2F5496')
+            c.border = thin_border
+            c.alignment = Alignment(horizontal='center')
+
+        # Set column widths for event columns
+        ws.column_dimensions['B'].width = max(ws.column_dimensions['B'].width, 40)
+        ws.column_dimensions['C'].width = max(ws.column_dimensions['C'].width, 36)
+        ws.column_dimensions['D'].width = max(ws.column_dimensions['D'].width, 14)
+
+        # Event rows
+        for evt in events:
+            evt_row += 1
+            ws.cell(row=evt_row, column=1, value=evt.get('category', '')).font = data_font
+            ws.cell(row=evt_row, column=2, value=evt.get('name', '')).font = data_font
+            ws.cell(row=evt_row, column=3, value=evt.get('dates', '')).font = data_font
+            att_cell = ws.cell(row=evt_row, column=4, value=evt.get('attendees'))
+            att_cell.font = data_font
+            att_cell.number_format = '#,##0'
+            att_cell.alignment = Alignment(horizontal='right')
+            for col in range(1, 5):
+                ws.cell(row=evt_row, column=col).border = thin_border
+
     wb.save(xlsx_path)
-    log.info(f"EPC sheet written → {xlsx_path.name} (EPC Forward tab, {len(dates)} dates)")
+    log.info(f"EPC sheet written → {xlsx_path.name} (EPC Forward tab, {len(dates)} dates, {len(events)} events)")
 
 
 # ─── Data Quality Thresholds ──────────────────────────────────────────────────

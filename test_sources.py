@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import date, timedelta
 from dotenv import load_dotenv
 
-load_dotenv('/Users/danizal/dani/aios/.env')
+load_dotenv('/Users/rentamac/dani/aios/.env')
 API_KEY = os.getenv('FIRECRAWL_API_KEY')
 ENDPOINT = 'https://api.firecrawl.dev/v1/scrape'
 HEADERS = {

@@ -38,7 +38,7 @@ from discord.ext import commands, tasks
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-load_dotenv('/Users/danizal/dani/aios/.env')  # Local dev — on Railway, env vars come from dashboard
+load_dotenv('/Users/rentamac/dani/aios/.env')  # Local dev — on Railway, env vars come from dashboard
 
 BOT_TOKEN       = os.getenv('HENRY_DISCORD_BOT_TOKEN')
 OPENROUTER_KEY  = os.getenv('HENRY_OPENROUTER_API_KEY')

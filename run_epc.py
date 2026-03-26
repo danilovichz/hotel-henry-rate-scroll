@@ -11,7 +11,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
-load_dotenv('/Users/danizal/dani/aios/.env')
+load_dotenv('/Users/rentamac/dani/aios/.env')
 
 logging.basicConfig(
     level=logging.INFO,
