@@ -221,6 +221,7 @@ exec ~/.local/bin/claude --dangerously-skip-permissions --channels plugin:discor
 {
   "channelsEnabled": true,
   "enabledPlugins": {"discord@claude-plugins-official": true},
+  "model": "claude-sonnet-4-6",
   "permissions": {
     "allow": ["Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "MultiEdit(*)", "Glob(*)", "Grep(*)"],
     "deny": []

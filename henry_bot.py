@@ -320,11 +320,6 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 
-@bot.event
-async def on_ready():
-    log.info(f"Henry bot online — logged in as {bot.user}")
-
-
 @bot.command(name='rates')
 async def cmd_rates(ctx, arg: str = None):
     """
@@ -438,15 +433,156 @@ def run_epc_scrape() -> bool:
         return False
 
 
+# ─── Control Commands (Mac Mini only — set HENRY_CONTROL_MODE=true) ────────────
+# These commands control the Henry AI (Claude Code) screen session on the Mac Mini.
+# On Railway, these commands silently do nothing useful (no screen session there).
+
+CONTROL_MODE = os.getenv('HENRY_CONTROL_MODE', '').lower() in ('1', 'true', 'yes')
+ALERT_CHANNEL_ID = int(os.getenv('HENRY_ALERT_CHANNEL', '0') or '0')
+HENRY_AI_LOG = Path('/Users/rentamac/henry/logs/henry-ai.log')
+HENRY_START_SCRIPT = '/Users/rentamac/henry/scripts/start-henry-ai.sh'
+
+def _start_henry_screen():
+    """Start Henry AI in a screen session with logging enabled."""
+    import subprocess
+    HENRY_AI_LOG.parent.mkdir(parents=True, exist_ok=True)
+    return subprocess.run(
+        ['screen', '-L', '-Logfile', str(HENRY_AI_LOG), '-dmS', 'henry-ai', HENRY_START_SCRIPT],
+        capture_output=True, text=True
+    )
+
+_rate_limit_alerted = False
+
+
+def _henry_ai_running() -> bool:
+    import subprocess
+    procs = subprocess.run(['ps', 'aux'], capture_output=True, text=True).stdout
+    return any('claude' in l and 'channels' in l for l in procs.splitlines())
+
+
+@bot.command(name='start')
+async def cmd_start(ctx, target: str = 'henry'):
+    if target.lower() != 'henry':
+        return
+    if not CONTROL_MODE:
+        await ctx.send('Control commands only available on Mac Mini.')
+        return
+    result = _start_henry_screen()
+    if result.returncode != 0:
+        await ctx.send(f'Failed to start Henry AI: {result.stderr}')
+        return
+    await ctx.send('Henry AI starting...')
+    for _ in range(15):
+        await asyncio.sleep(2)
+        if _henry_ai_running():
+            await ctx.send('Henry AI is ready.')
+            return
+    await ctx.send('Still starting — use `!status` to check.')
+
+
+@bot.command(name='stop')
+async def cmd_stop(ctx, target: str = 'henry'):
+    if target.lower() != 'henry':
+        return
+    if not CONTROL_MODE:
+        await ctx.send('Control commands only available on Mac Mini.')
+        return
+    import subprocess
+    subprocess.run(['pkill', '-9', '-f', 'claude.*channels'], capture_output=True)
+    subprocess.run(['screen', '-S', 'henry-ai', '-X', 'quit'], capture_output=True)
+    await ctx.send('Henry AI stopped.')
+
+
+@bot.command(name='restart')
+async def cmd_restart(ctx, target: str = 'henry'):
+    if target.lower() != 'henry':
+        return
+    if not CONTROL_MODE:
+        await ctx.send('Control commands only available on Mac Mini.')
+        return
+    import subprocess
+    subprocess.run(['pkill', '-9', '-f', 'claude.*channels'], capture_output=True)
+    subprocess.run(['screen', '-S', 'henry-ai', '-X', 'quit'], capture_output=True)
+    await asyncio.sleep(2)
+    _start_henry_screen()
+    await ctx.send('Henry AI restarting...')
+    for _ in range(15):
+        await asyncio.sleep(2)
+        if _henry_ai_running():
+            await ctx.send('Henry AI is ready.')
+            return
+    await ctx.send('Still starting — use `!status` to check.')
+
+
+@bot.command(name='status')
+async def cmd_status(ctx):
+    if not CONTROL_MODE:
+        await ctx.send('Status command only available on Mac Mini.')
+        return
+    import subprocess
+    procs = subprocess.run(['ps', 'aux'], capture_output=True, text=True).stdout
+    henry_ai = _henry_ai_running()
+    henry_bot_running = 'henry_bot.py' in procs
+    screen_out = subprocess.run(['screen', '-list'], capture_output=True, text=True).stdout
+    henry_screen = 'henry-ai' in screen_out
+    msg = '**Henry Status**\n'
+    msg += f'- Henry AI (Claude): {"✅ Running" if henry_ai else "❌ NOT running — use `!start henry`"}\n'
+    msg += f'- Scraper bot: {"✅ Running" if henry_bot_running else "❌ NOT running"}\n'
+    msg += f'- Screen session: {"✅ Active" if henry_screen else "❌ Not found"}'
+    await ctx.send(msg)
+
+
+@tasks.loop(seconds=30)
+async def rate_limit_monitor():
+    """Watch Henry AI screen log for rate limit messages and alert Discord."""
+    global _rate_limit_alerted
+    if not CONTROL_MODE or not HENRY_AI_LOG.exists():
+        return
+    try:
+        size = HENRY_AI_LOG.stat().st_size
+        with open(HENRY_AI_LOG, 'rb') as f:
+            f.seek(max(0, size - 4096))
+            tail = f.read().decode('utf-8', errors='ignore')
+    except Exception:
+        return
+
+    hit_limit = "You've hit your limit" in tail or "rate limit" in tail.lower()
+
+    if hit_limit and not _rate_limit_alerted:
+        _rate_limit_alerted = True
+        reset_info = ''
+        for line in tail.splitlines():
+            if 'resets' in line.lower():
+                reset_info = line.strip()
+                break
+        if ALERT_CHANNEL_ID:
+            channel = bot.get_channel(ALERT_CHANNEL_ID)
+            if channel:
+                msg = '⚠️ **Henry AI hit rate limit** — paused until limit resets.'
+                if reset_info:
+                    msg += f'\n`{reset_info}`'
+                await channel.send(msg)
+    elif not hit_limit:
+        _rate_limit_alerted = False
+
+
 @bot.event
 async def on_ready():
     log.info(f"Henry bot online — logged in as {bot.user}")
-    if not scheduled_scrape.is_running():
-        scheduled_scrape.start()
-        log.info("Scrape scheduler started — every 30 min, 8am–2:30am San Diego")
-    if not daily_epc_scrape.is_running():
-        daily_epc_scrape.start()
-        log.info("EPC scheduler started — daily at 6 AM San Diego")
+    if not CONTROL_MODE:
+        # Railway: run the scraping schedulers
+        if not scheduled_scrape.is_running():
+            scheduled_scrape.start()
+            log.info("Scrape scheduler started — every 30 min, 8am–2:30am San Diego")
+        if not daily_epc_scrape.is_running():
+            daily_epc_scrape.start()
+            log.info("EPC scheduler started — daily at 6 AM San Diego")
+    else:
+        # Mac Mini control mode: run rate limit monitor only
+        log.info("Control mode — scrape schedulers disabled (Railway handles scraping)")
+        if not rate_limit_monitor.is_running():
+            rate_limit_monitor.start()
+            log.info("Rate limit monitor started")
 
 
 @tasks.loop(minutes=30)

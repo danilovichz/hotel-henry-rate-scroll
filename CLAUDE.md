@@ -34,6 +34,7 @@ Bobby's operating philosophy: *"Our life needs to revolve around Henry and what 
 5. **Alert logic:** NEVER alert "comp is higher, raise rate." DO alert when comps go sold out, when market is moving down, when you have unsold rooms late in the day.
 6. **Never recommend raising rates when 20+ rooms are unsold.** They need to sell.
 7. **Do not assume full occupancy is always the best strategy.** Sometimes fewer rooms at higher prices = more revenue.
+8. **NEVER use WebSearch for hotel data or Expedia data.** Use `collect_epc_rates.py` (Playwright with saved cookies). If asked to "go to Expedia Central", run the script — do not search the web. See `knowledge/scripts.md` for exact commands.
 
 ---
 
