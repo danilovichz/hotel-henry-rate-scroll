@@ -439,16 +439,18 @@ def run_epc_scrape() -> bool:
 
 CONTROL_MODE = os.getenv('HENRY_CONTROL_MODE', '').lower() in ('1', 'true', 'yes')
 ALERT_CHANNEL_ID = int(os.getenv('HENRY_ALERT_CHANNEL', '0') or '0')
-HENRY_AI_LOG = Path('/Users/rentamac/henry/logs/henry-ai.log')
+HENRY_AI_LOG = Path('/Users/rentamac/henry/logs/screenlog.0')  # screen -L default log name
 HENRY_START_SCRIPT = '/Users/rentamac/henry/scripts/start-henry-ai.sh'
+HENRY_LOGS_DIR = '/Users/rentamac/henry/logs'
 
 def _start_henry_screen():
-    """Start Henry AI in a screen session with logging enabled."""
+    """Start Henry AI in a screen session with logging enabled (screen -L writes screenlog.0)."""
     import subprocess
-    HENRY_AI_LOG.parent.mkdir(parents=True, exist_ok=True)
+    Path(HENRY_LOGS_DIR).mkdir(parents=True, exist_ok=True)
     return subprocess.run(
-        ['screen', '-L', '-Logfile', str(HENRY_AI_LOG), '-dmS', 'henry-ai', HENRY_START_SCRIPT],
-        capture_output=True, text=True
+        ['screen', '-L', '-dmS', 'henry-ai', HENRY_START_SCRIPT],
+        capture_output=True, text=True,
+        cwd=HENRY_LOGS_DIR  # screen writes screenlog.0 in cwd
     )
 
 _rate_limit_alerted = False
