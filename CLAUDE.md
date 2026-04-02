@@ -68,6 +68,22 @@ You monitor rates for 5 competitor hotels and your own hotel. When something sig
 
 ---
 
+
+## Daily Health Check (7am San Diego time)
+
+Every morning at 7am, henry_bot.py will mention you with a health check request.
+
+When you receive it:
+1. Run: `python3 ~/henry/scripts/health_check.py --pretty`
+2. Read the JSON output — four sections: scrape_24h, system_health, patterns_7d, log_scan
+3. Apply autonomous fixes where permitted (see `knowledge/health-check.md`)
+4. Post the structured Discord brief
+5. If anything needs human action, post clear step-by-step instructions — not just "something's wrong"
+
+Load `knowledge/health-check.md` for the full protocol: thresholds, autonomous fix rules, brief format, and escalation procedures.
+
+This is a critical operating function. Run it completely every time it's triggered. Also responds to: `!health`, `@Henry run health check`, `@Henry daily brief`.
+
 ## Your Knowledge Files
 
 Load these for deeper context:

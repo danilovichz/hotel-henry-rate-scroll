@@ -571,6 +571,27 @@ async def rate_limit_monitor():
         _rate_limit_alerted = False
 
 
+
+@tasks.loop(minutes=30)
+async def daily_health_check():
+    """Post health check trigger to Discord at 7am San Diego time (Mac Mini only)."""
+    if not IS_MAC_MINI:
+        return
+    sd_now = datetime.now(SD_TZ)
+    if sd_now.hour != 7 or sd_now.minute >= 30:
+        return
+    log.info("Daily health check trigger — 7:00 AM SD")
+    if ALERT_CHANNEL_ID:
+        channel = bot.get_channel(ALERT_CHANNEL_ID)
+        if channel:
+            await channel.send(
+                "@Henry 🏨 **Daily health check time.** "
+                "Run `python3 ~/henry/scripts/health_check.py --pretty`, "
+                "analyze the results, apply any autonomous fixes, and post the daily brief. "
+                "Protocol: `knowledge/health-check.md`"
+            )
+
+
 @bot.event
 async def on_ready():
     log.info(f"Henry bot online — logged in as {bot.user} | mac_mini={IS_MAC_MINI}")
@@ -583,6 +604,9 @@ async def on_ready():
     if IS_MAC_MINI and not rate_limit_monitor.is_running():
         rate_limit_monitor.start()
         log.info("Rate limit monitor started")
+    if IS_MAC_MINI and not daily_health_check.is_running():
+        daily_health_check.start()
+        log.info("Daily health check scheduler started — fires at 7 AM San Diego")
 
 
 @tasks.loop(minutes=30)

@@ -136,6 +136,29 @@ python3 run_epc.py
 
 ---
 
+
+### health_check.py — Daily System Health Report
+
+**What it does:**
+- Reads last 24h of rate_scroll CSVs and analyzes scrape run health
+- Checks henry_bot.py, Henry AI screen session, and EPC session status
+- Scans logs for recent errors and rate limit hits
+- Analyzes 7-day patterns for systematic hotel ERR rates and rate positioning
+- Returns structured JSON report for Henry AI to interpret and act on
+
+**How to run:**
+```bash
+python3 health_check.py           # JSON to stdout
+python3 health_check.py --pretty  # Pretty-printed JSON
+```
+
+**Output:** Structured JSON with four sections: `scrape_24h`, `system_health`, `patterns_7d`, `log_scan`.
+
+**When to run:** Automatically triggered at 7am via henry_bot.py daily_health_check task. Also run manually for ad-hoc system checks.
+
+**See also:** `knowledge/health-check.md` for interpretation thresholds, autonomous fix rules, and Discord brief format.
+
+---
 ### test_sources.py — Test All Data Sources
 
 **What it does:**
