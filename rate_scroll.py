@@ -245,7 +245,10 @@ def _firecrawl_extract(url: str, schema: dict, prompt: str) -> dict:
         "url": url,
         "formats": ["extract", "markdown"],  # markdown lets us detect bot challenges
         "extract": {"schema": schema, "prompt": prompt},
-        "mobile": True,  # mobile UA is less likely to trigger bot detection
+        "mobile": True,
+        "proxy": "auto",            # auto: tries basic first, upgrades to enhanced (residential) if blocked
+        "location": {"country": "US", "languages": ["en-US"]},  # US proxy — required for enhanced mode
+        "waitFor": 2000,            # extra wait for JS-rendered room availability
     }
     headers = {
         "Authorization": f"Bearer {FIRECRAWL_API_KEY}",
