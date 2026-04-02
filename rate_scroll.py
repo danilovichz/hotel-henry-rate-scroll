@@ -126,7 +126,7 @@ COMP_HOTELS = [
     },
 ]
 
-ALL_HOTELS = [OUR_HOTEL] + COMP_HOTELS
+ALL_HOTELS = COMP_HOTELS + [OUR_HOTEL]  # Our hotel scraped last — lets Firecrawl warm up on comp pages first
 
 
 # ─── URL Builders ─────────────────────────────────────────────────────────────
@@ -243,8 +243,9 @@ def _firecrawl_extract(url: str, schema: dict, prompt: str) -> dict:
     """Single Firecrawl LLM-extract call. Returns extracted dict or raises on failure."""
     payload = {
         "url": url,
-        "formats": ["extract"],
-        "extract": {"schema": schema, "prompt": prompt}
+        "formats": ["extract", "markdown"],  # markdown lets us detect bot challenges
+        "extract": {"schema": schema, "prompt": prompt},
+        "mobile": True,  # mobile UA is less likely to trigger bot detection
     }
     headers = {
         "Authorization": f"Bearer {FIRECRAWL_API_KEY}",
@@ -253,6 +254,10 @@ def _firecrawl_extract(url: str, schema: dict, prompt: str) -> dict:
     resp = requests.post(FIRECRAWL_URL, json=payload, headers=headers, timeout=60)
     resp.raise_for_status()
     data = resp.json()
+    # Detect bot challenge — Expedia shows "Bot or Not?" CAPTCHA when blocking scrapers
+    md = data.get('data', {}).get('markdown', '') or ''
+    if 'Bot or Not' in md or 'You have been blocked' in md or 'human side' in md:
+        raise ValueError('bot_challenge: Expedia bot detection triggered — result would be unreliable')
     if data.get('success') and data.get('data', {}).get('extract'):
         return data['data']['extract']
     raise ValueError(f"No extract returned: {data.get('error', 'unknown')}")
@@ -329,7 +334,10 @@ def scrape_hotel(hotel: dict, checkin: str, checkout: str) -> dict:
                  f"({len(exp_data.get('room_types', []))} room types)")
     except Exception as e:
         exp_error = str(e)
-        log.error(f"  Expedia FAIL — {hotel['name']}: {e}")
+        if 'bot_challenge' in str(e):
+            log.warning(f"  Expedia BLOCKED — {hotel['name']}: Expedia bot check (will show as ERR, not SOLD OUT)")
+        else:
+            log.error(f"  Expedia FAIL — {hotel['name']}: {e}")
 
     # ── 2. IHG scrape ─────────────────────────────────────────────────────────
     ihg_rate = 'X'  # Default for non-IHG hotels
