@@ -30,6 +30,7 @@ import os
 import re
 import sys
 import csv
+import shutil
 import logging
 import argparse
 import requests
@@ -49,6 +50,7 @@ DISCORD_WEBHOOK = os.getenv('HENRY_DISCORD_WEBHOOK', '')
 SCRIPT_DIR = Path(__file__).parent
 LOG_DIR = SCRIPT_DIR / 'logs'
 DATA_DIR = SCRIPT_DIR / 'data'
+MARKDOWN_DIR = DATA_DIR / 'firecrawl_markdown'
 LOG_DIR.mkdir(exist_ok=True)
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -239,11 +241,11 @@ IHG_SCHEMA = {
 
 # ─── Scraping ─────────────────────────────────────────────────────────────────
 
-def _firecrawl_extract(url: str, schema: dict, prompt: str) -> dict:
-    """Single Firecrawl LLM-extract call. Returns extracted dict or raises on failure."""
+def _firecrawl_extract(url: str, schema: dict, prompt: str) -> tuple:
+    """Single Firecrawl LLM-extract call. Returns (extracted_dict, markdown_str) or raises on failure."""
     payload = {
         "url": url,
-        "formats": ["extract", "markdown"],  # markdown lets us detect bot challenges
+        "formats": ["extract", "markdown"],  # markdown lets us detect bot challenges + audit trail
         "extract": {"schema": schema, "prompt": prompt},
         "mobile": True,
         "proxy": "auto",            # auto: tries basic first, upgrades to enhanced (residential) if blocked
@@ -262,8 +264,82 @@ def _firecrawl_extract(url: str, schema: dict, prompt: str) -> dict:
     if 'Bot or Not' in md or 'You have been blocked' in md or 'human side' in md:
         raise ValueError('bot_challenge: Expedia bot detection triggered — result would be unreliable')
     if data.get('success') and data.get('data', {}).get('extract'):
-        return data['data']['extract']
+        return data['data']['extract'], md
     raise ValueError(f"No extract returned: {data.get('error', 'unknown')}")
+
+
+def detect_scrape_anomalies(hotel_name: str, source: str, extract: dict, markdown: str) -> list:
+    """
+    Detect per-scrape anomalies immediately after each Firecrawl call.
+    Returns a list of anomaly label strings — embedded in the audit markdown header.
+    """
+    anomalies = []
+    rate = extract.get('lowest_rate_usd')
+    sold = extract.get('is_sold_out', False)
+
+    # Sold out flag but price showing — contradictory
+    if sold and rate:
+        anomalies.append(f"SOLD_OUT_WITH_RATE: is_sold_out=True but rate=${rate:.0f}")
+
+    # Rate below floor — almost certainly a parse error
+    if rate and rate < 50:
+        anomalies.append(f"RATE_BELOW_FLOOR: ${rate:.0f} < $50 floor")
+
+    # Rate above ceiling — unusually high for SD Mission Valley
+    if rate and rate > 700:
+        anomalies.append(f"RATE_ABOVE_CEILING: ${rate:.0f} > $700 ceiling")
+
+    # Not sold out, no rate, no error — extraction probably failed silently
+    if not sold and rate is None:
+        anomalies.append("NO_RATE_NO_ERROR: not sold out but no rate extracted")
+
+    # Empty/short markdown — page may not have loaded
+    if len(markdown.strip()) < 200:
+        anomalies.append(f"EMPTY_MARKDOWN: only {len(markdown.strip())} chars (page may not have loaded)")
+
+    return anomalies
+
+
+def save_firecrawl_markdown(hotel_name: str, source: str, markdown: str,
+                            run_time: datetime, checkin: str, url: str,
+                            extract: dict = None, anomalies: list = None):
+    """Save raw Firecrawl markdown response for audit trail. One file per hotel per scrape run."""
+    try:
+        date_dir = MARKDOWN_DIR / run_time.strftime('%Y-%m-%d')
+        date_dir.mkdir(parents=True, exist_ok=True)
+
+        slug = re.sub(r'[^a-z0-9]+', '-', hotel_name.lower()).strip('-')
+        time_str = run_time.strftime('%H-%M')
+        filename = f"{slug}_{source}_{time_str}.md"
+
+        header_lines = [
+            f"# Firecrawl Audit — {hotel_name} ({source.upper()})",
+            f"",
+            f"- **Scraped:** {run_time.strftime('%Y-%m-%d %H:%M:%S')} SD",
+            f"- **Check-in:** {checkin}",
+            f"- **URL:** {url}",
+            f"- **Extract:** {extract}",
+        ]
+        if anomalies:
+            header_lines.append(f"- **⚠️ ANOMALIES:** {'; '.join(anomalies)}")
+        header_lines += ["", "---", ""]
+
+        content = "\n".join(header_lines) + markdown
+        (date_dir / filename).write_text(content, encoding='utf-8')
+        log.debug(f"Markdown audit saved: {date_dir / filename}")
+    except Exception as e:
+        log.warning(f"Failed to save markdown audit for {hotel_name}/{source}: {e}")
+
+
+def cleanup_old_markdown(days_to_keep: int = 14):
+    """Remove markdown audit directories older than N days."""
+    if not MARKDOWN_DIR.exists():
+        return
+    cutoff = (datetime.now(SD_TZ).date() - timedelta(days=days_to_keep)).isoformat()
+    for d in MARKDOWN_DIR.iterdir():
+        if d.is_dir() and d.name < cutoff:
+            shutil.rmtree(d)
+            log.info(f"Cleaned up old markdown audit dir: {d.name}")
 
 
 def _resolve_room_count(extracted_val, arbitrary: int, hotel_sold_out: bool = False) -> int:
@@ -289,7 +365,7 @@ def _resolve_room_count(extracted_val, arbitrary: int, hotel_sold_out: bool = Fa
     return arbitrary
 
 
-def scrape_hotel(hotel: dict, checkin: str, checkout: str) -> dict:
+def scrape_hotel(hotel: dict, checkin: str, checkout: str, run_time: datetime = None) -> dict:
     """
     Scrape one hotel for a check-in date.
 
@@ -304,6 +380,9 @@ def scrape_hotel(hotel: dict, checkin: str, checkout: str) -> dict:
       - If sold out → 0
       - Total = kings + queens
     """
+    if run_time is None:
+        run_time = datetime.now(SD_TZ)
+
     is_ihg_family = hotel.get('ihg_family', False)
     arbitrary = hotel.get('arbitrary_rooms', 20)
 
@@ -320,7 +399,7 @@ def scrape_hotel(hotel: dict, checkin: str, checkout: str) -> dict:
     exp_error = None
 
     try:
-        exp_data = _firecrawl_extract(
+        exp_data, exp_markdown = _firecrawl_extract(
             exp_url,
             EXPEDIA_SCHEMA,
             (
@@ -335,12 +414,18 @@ def scrape_hotel(hotel: dict, checkin: str, checkout: str) -> dict:
         )
         log.info(f"  Expedia OK — {hotel['name']}: ${exp_data.get('lowest_rate_usd')} "
                  f"({len(exp_data.get('room_types', []))} room types)")
+        exp_anomalies = detect_scrape_anomalies(hotel['name'], 'expedia', exp_data, exp_markdown)
     except Exception as e:
         exp_error = str(e)
+        exp_markdown = f"# SCRAPE FAILED\n\nError: {e}\nURL: {exp_url}"
+        exp_anomalies = [f"SCRAPE_ERROR: {e}"]
         if 'bot_challenge' in str(e):
             log.warning(f"  Expedia BLOCKED — {hotel['name']}: Expedia bot check (will show as ERR, not SOLD OUT)")
         else:
             log.error(f"  Expedia FAIL — {hotel['name']}: {e}")
+
+    save_firecrawl_markdown(hotel['name'], 'expedia', exp_markdown, run_time, checkin,
+                            exp_url, extract=exp_data or None, anomalies=exp_anomalies or None)
 
     # ── 2. IHG scrape ─────────────────────────────────────────────────────────
     ihg_rate = 'X'  # Default for non-IHG hotels
@@ -352,7 +437,7 @@ def scrape_hotel(hotel: dict, checkin: str, checkout: str) -> dict:
 
         if ihg_url_str:
             try:
-                ihg_data = _firecrawl_extract(
+                ihg_data, ihg_markdown = _firecrawl_extract(
                     ihg_url_str,
                     IHG_SCHEMA,
                     (
@@ -367,9 +452,16 @@ def scrape_hotel(hotel: dict, checkin: str, checkout: str) -> dict:
                 else:
                     ihg_rate = ihg_data.get('lowest_rate_usd')
                 log.info(f"  IHG OK — {hotel['name']}: {('SOLD OUT' if ihg_rate == 'SOLD' else f'${ihg_rate}')}")
+                ihg_anomalies = detect_scrape_anomalies(hotel['name'], 'ihg', ihg_data, ihg_markdown)
             except Exception as e:
                 ihg_error = str(e)
+                ihg_markdown = f"# SCRAPE FAILED\n\nError: {e}\nURL: {ihg_url_str}"
+                ihg_data = {}
+                ihg_anomalies = [f"SCRAPE_ERROR: {e}"]
                 log.error(f"  IHG FAIL — {hotel['name']}: {e}")
+
+            save_firecrawl_markdown(hotel['name'], 'ihg', ihg_markdown, run_time, checkin,
+                                    ihg_url_str, extract=ihg_data or None, anomalies=ihg_anomalies or None)
         else:
             log.info(f"  IHG SKIP — {hotel['name']}: no IHG code set (add to hotel config)")
 
@@ -441,10 +533,12 @@ def scrape_hotel(hotel: dict, checkin: str, checkout: str) -> dict:
 
 # ─── Rate Scroll Run ──────────────────────────────────────────────────────────
 
-def run_rate_scroll(checkin_date: date, hotels: list = None) -> list:
+def run_rate_scroll(checkin_date: date, hotels: list = None, run_time: datetime = None) -> list:
     """Scrape all hotels for a given check-in date. Returns list of result dicts."""
     if hotels is None:
         hotels = ALL_HOTELS
+    if run_time is None:
+        run_time = datetime.now(SD_TZ)
 
     checkin = checkin_date.strftime('%Y-%m-%d')
     checkout = (checkin_date + timedelta(days=1)).strftime('%Y-%m-%d')
@@ -454,7 +548,7 @@ def run_rate_scroll(checkin_date: date, hotels: list = None) -> list:
     results = []
     for hotel in hotels:
         log.info(f"Scraping {hotel['name']}...")
-        result = scrape_hotel(hotel, checkin, checkout)
+        result = scrape_hotel(hotel, checkin, checkout, run_time=run_time)
         results.append(result)
 
     return results
@@ -993,13 +1087,15 @@ def check_data_quality(results: list, prev_results: dict) -> list:
         # 1. Contradictory: has rate but sold out flag set
         if is_sold and exp_rate:
             flags.append(
-                f"⚠️ **{name}**: marked SOLD OUT but Expedia shows ${exp_rate:.0f} — likely page error"
+                f"⚠️ **{name}**: marked SOLD OUT but Expedia shows ${exp_rate:.0f} — likely page error "
+                f"(check audit: data/firecrawl_markdown/{datetime.now(SD_TZ).strftime('%Y-%m-%d')}/)"
             )
 
         # 2. Not sold out, no rate extracted, no error reported
         if not is_sold and exp_rate is None and not r.get('error'):
             flags.append(
-                f"⚠️ **{name}**: no Expedia rate returned (not sold out) — page may have loaded wrong"
+                f"⚠️ **{name}**: no Expedia rate returned (not sold out) — page may have loaded wrong "
+                f"(check audit: data/firecrawl_markdown/{datetime.now(SD_TZ).strftime('%Y-%m-%d')}/)"
             )
 
         # 3. Rate below floor
@@ -1251,7 +1347,8 @@ def main():
     hotels = [COMP_HOTELS[4]] if args.test else ALL_HOTELS  # Hampton only in test
     run_time = datetime.now(SD_TZ)
 
-    results = run_rate_scroll(checkin_date, hotels)
+    cleanup_old_markdown()  # Prune audit dirs older than 14 days
+    results = run_rate_scroll(checkin_date, hotels, run_time=run_time)
 
     # ── Print summary ─────────────────────────────────────────────────────────
     print(f"\n{'=' * 80}")
