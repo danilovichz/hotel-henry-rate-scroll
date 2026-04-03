@@ -434,11 +434,11 @@ def run_epc_scrape() -> bool:
 
 
 # ─── Control Commands (Mac Mini only — set HENRY_CONTROL_MODE=true) ────────────
-# These commands control the Henry AI (Claude Code) screen session on the Mac Mini.
-# On Railway, these commands silently do nothing useful (no screen session there).
+# These commands control the Henry AI (Claude Code) process on the Mac Mini.
+# launchd manages the process (KeepAlive: true) — no screen session required.
 
 ALERT_CHANNEL_ID = int(os.getenv('HENRY_ALERT_CHANNEL', '0') or '0')
-HENRY_AI_LOG = Path('/Users/rentamac/henry/logs/screenlog.0')  # screen -L default log name
+HENRY_AI_LOG = Path('/Users/rentamac/henry/logs/henry-ai.log')  # Claude Code output via launchd
 HENRY_START_SCRIPT = '/Users/rentamac/henry/scripts/start-henry-ai.sh'
 HENRY_LOGS_DIR = '/Users/rentamac/henry/logs'
 
@@ -446,14 +446,13 @@ HENRY_LOGS_DIR = '/Users/rentamac/henry/logs'
 # True on Mac Mini, False on Railway or any other host.
 IS_MAC_MINI = Path(HENRY_START_SCRIPT).exists()
 
-def _start_henry_screen():
-    """Start Henry AI in a screen session with logging enabled (screen -L writes screenlog.0)."""
+def _start_henry_ai():
+    """Start Henry AI via launchctl (launchd manages process + auto-restart)."""
     import subprocess
     Path(HENRY_LOGS_DIR).mkdir(parents=True, exist_ok=True)
     return subprocess.run(
-        ['screen', '-L', '-dmS', 'henry-ai', HENRY_START_SCRIPT],
+        ['launchctl', 'kickstart', 'gui/501/com.henry.claude-channels'],
         capture_output=True, text=True,
-        cwd=HENRY_LOGS_DIR  # screen writes screenlog.0 in cwd
     )
 
 _rate_limit_alerted = False
@@ -472,11 +471,11 @@ async def cmd_start(ctx, target: str = 'henry'):
     if not IS_MAC_MINI:
         await ctx.send('Control commands only available on Mac Mini.')
         return
-    result = _start_henry_screen()
+    result = _start_henry_ai()
     if result.returncode != 0:
         await ctx.send(f'Failed to start Henry AI: {result.stderr}')
         return
-    await ctx.send('Henry AI starting...')
+    await ctx.send('Henry AI starting (launchd will manage it)...')
     for _ in range(15):
         await asyncio.sleep(2)
         if _henry_ai_running():
@@ -494,8 +493,8 @@ async def cmd_stop(ctx, target: str = 'henry'):
         return
     import subprocess
     subprocess.run(['pkill', '-9', '-f', 'claude.*channels'], capture_output=True)
-    subprocess.run(['screen', '-S', 'henry-ai', '-X', 'quit'], capture_output=True)
-    await ctx.send('Henry AI stopped.')
+    # launchd will restart it automatically — this just kills the current session
+    await ctx.send('Henry AI process killed. launchd will restart it in ~30s. Use `!status` to confirm.')
 
 
 @bot.command(name='restart')
@@ -507,10 +506,8 @@ async def cmd_restart(ctx, target: str = 'henry'):
         return
     import subprocess
     subprocess.run(['pkill', '-9', '-f', 'claude.*channels'], capture_output=True)
-    subprocess.run(['screen', '-S', 'henry-ai', '-X', 'quit'], capture_output=True)
-    await asyncio.sleep(2)
-    _start_henry_screen()
-    await ctx.send('Henry AI restarting...')
+    # launchd ThrottleInterval=30 will restart automatically
+    await ctx.send('Henry AI restarting — launchd will bring it back in ~30s...')
     for _ in range(15):
         await asyncio.sleep(2)
         if _henry_ai_running():
@@ -528,12 +525,10 @@ async def cmd_status(ctx):
     procs = subprocess.run(['ps', 'aux'], capture_output=True, text=True).stdout
     henry_ai = _henry_ai_running()
     henry_bot_running = 'henry_bot.py' in procs
-    screen_out = subprocess.run(['screen', '-list'], capture_output=True, text=True).stdout
-    henry_screen = 'henry-ai' in screen_out
     msg = '**Henry Status**\n'
-    msg += f'- Henry AI (Claude): {"✅ Running" if henry_ai else "❌ NOT running — use `!start henry`"}\n'
+    msg += f'- Henry AI (Claude): {"✅ Running" if henry_ai else "❌ NOT running — launchd should restart, or run !start henry"}\n'
     msg += f'- Scraper bot: {"✅ Running" if henry_bot_running else "❌ NOT running"}\n'
-    msg += f'- Screen session: {"✅ Active" if henry_screen else "❌ Not found"}'
+    msg += f'- Auto-restart: ✅ Managed by launchd (KeepAlive enabled)'
     await ctx.send(msg)
 
 

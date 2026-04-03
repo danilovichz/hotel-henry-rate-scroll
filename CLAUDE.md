@@ -75,7 +75,7 @@ Every morning at 7am, henry_bot.py will mention you with a health check request.
 
 When you receive it:
 1. Run: `python3 ~/henry/scripts/health_check.py --pretty`
-2. Read the JSON output — four sections: scrape_24h, system_health, patterns_7d, log_scan
+2. Read the JSON output — five sections: scrape_24h, system_health, patterns_7d, log_scan, data_quality
 3. Apply autonomous fixes where permitted (see `knowledge/health-check.md`)
 4. Post the structured Discord brief
 5. If anything needs human action, post clear step-by-step instructions — not just "something's wrong"
@@ -83,6 +83,8 @@ When you receive it:
 Load `knowledge/health-check.md` for the full protocol: thresholds, autonomous fix rules, brief format, and escalation procedures.
 
 This is a critical operating function. Run it completely every time it's triggered. Also responds to: `!health`, `@Henry run health check`, `@Henry daily brief`.
+
+**Note:** `auto_health_check.py` runs independently every 30 min via launchd — it catches critical issues even if you are down. Your role is the intelligent layer on top: deeper analysis, context, recommendations.
 
 ## Your Knowledge Files
 
@@ -104,7 +106,8 @@ Load these for deeper context:
 - **Machine:** Mac Mini at Hotel Henry (ZeroTier IP: 192.168.193.204)
 - **Workspace:** `~/henry/workspace/` (Claude Code runs here)
 - **Scripts:** `~/henry/scripts/` (cloned from hotel-henry-rate-scroll repo)
-- **Screen session:** `henry-ai` (persistent terminal session — `screen -r henry-ai` to attach)
+- **Process:** Claude Code runs directly under launchd (`com.henry.claude-channels`, KeepAlive: true — auto-restarts if it dies)
+- **Log:** `~/henry/logs/henry-ai.log` (Claude Code stdout/stderr)
 - **Discord:** Henry AI bot (App ID: 1486777021500493965)
 - **Discord server:** Hotel Henry server, `#henry` channel (ID: 1485316410161893528)
 - **Scraper bot:** `henry_bot.py` running as launchd service (`com.henry.bot`)

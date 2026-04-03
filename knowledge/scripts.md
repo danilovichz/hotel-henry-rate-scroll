@@ -299,3 +299,35 @@ Files are named with timestamp and posted to Discord.
 ```bash
 tail -f ~/henry/scripts/logs/henry_bot.log  # Follow live log
 ```
+
+---
+
+## auto_health_check.py
+
+**Purpose:** Standalone system monitor — checks scrape health, data quality, system processes, and posts to Discord via webhook. No Claude / Henry AI dependency required.
+
+**Runs via:** launchd `com.henry.autocheck` every 30 minutes automatically.
+
+**Modes:**
+- Default (every 30 min): posts to Discord only if a critical issue is detected (silent when all is healthy)
+- 7:00–7:29 AM SD window: automatically posts full daily brief
+- `--daily` flag: force full daily brief regardless of time
+
+**Usage:**
+```bash
+python3 ~/henry/scripts/auto_health_check.py           # Critical check (silent if OK)
+python3 ~/henry/scripts/auto_health_check.py --daily   # Force full daily brief
+```
+
+**What it checks:**
+- henry_bot.py running (pgrep)
+- Henry AI process running (pgrep)
+- EPC session age (flags if expired)
+- Data quality: all-SOLD-OUT run, missing Expedia rates, missing XLSX
+- 7-day patterns from health_check.py
+
+**Posts to:** #henry channel (ID: 1485316410161893528) via HENRY_DISCORD_WEBHOOK
+
+**Dependencies:** stdlib only (json, subprocess, urllib.request, zoneinfo) — no pip packages required
+
+**See also:** `knowledge/health-check.md` for thresholds and protocol

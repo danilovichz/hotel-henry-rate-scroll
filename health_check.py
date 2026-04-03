@@ -27,9 +27,9 @@ LOGS_DIR     = SCRIPTS_DIR / 'logs'
 HENRY_LOGS   = Path('/Users/rentamac/henry/logs')
 EPC_SESSION  = DATA_DIR / 'epc_session.json'
 BOT_LOG      = LOGS_DIR / 'launchd_err.log'
-SCREEN_LOG   = HENRY_LOGS / 'screenlog.0'
+HENRY_AI_LOG = HENRY_LOGS / 'henry-ai.log'   # Claude Code output (replaces screenlog.0)
 
-# Expected scrape runs during operating hours (8am–2:30am = 18.5h = ~37 runs)
+# Expected scrape runs during operating hours (8am-2:30am = 18.5h = ~37 runs)
 EXPECTED_RUNS_PER_DAY = 37
 
 
@@ -123,7 +123,7 @@ def _parse_rate(val: str):
 # ─── B. System health ─────────────────────────────────────────────────────────
 
 def check_system_health() -> dict:
-    """Check running processes, screen session, and EPC session age."""
+    """Check running processes and EPC session age."""
 
     # henry_bot.py running?
     bot_result = subprocess.run(
@@ -138,13 +138,6 @@ def check_system_health() -> dict:
         capture_output=True, text=True
     )
     henry_ai_running = bool(ai_result.stdout.strip())
-
-    # Screen session alive?
-    screen_result = subprocess.run(
-        ['screen', '-ls'],
-        capture_output=True, text=True
-    )
-    screen_alive = 'henry-ai' in screen_result.stdout
 
     # EPC session age
     epc_age_days = None
@@ -163,7 +156,6 @@ def check_system_health() -> dict:
     return {
         'henry_bot_running': henry_bot_running,
         'henry_ai_running': henry_ai_running,
-        'screen_session_alive': screen_alive,
         'epc_session_age_days': epc_age_days,
         'epc_session_status': epc_status,
     }
@@ -236,18 +228,18 @@ def analyze_patterns_7d(today: date) -> dict:
             )
 
     return {
-        'hotels':          hotel_summary,
-        'our_avg_rate_7d': our_avg,
+        'hotels':           hotel_summary,
+        'our_avg_rate_7d':  our_avg,
         'comp_avg_rate_7d': comp_avg,
-        'rate_gap_pct':    rate_gap,
-        'flags':           flagged,
+        'rate_gap_pct':     rate_gap,
+        'flags':            flagged,
     }
 
 
 # ─── D. Log scan ──────────────────────────────────────────────────────────────
 
 def scan_logs() -> dict:
-    """Scan last 200 lines of bot log and tail of screen log for issues."""
+    """Scan last 200 lines of bot log and henry-ai.log for issues."""
     recent_errors = []
     recent_warnings = []
     rate_limit_hits = 0
@@ -265,11 +257,11 @@ def scan_logs() -> dict:
         except Exception:
             pass
 
-    # Screen log — rate limit detection
-    if SCREEN_LOG.exists():
+    # Henry AI log — rate limit detection
+    if HENRY_AI_LOG.exists():
         try:
-            size = SCREEN_LOG.stat().st_size
-            with open(SCREEN_LOG, 'rb') as f:
+            size = HENRY_AI_LOG.stat().st_size
+            with open(HENRY_AI_LOG, 'rb') as f:
                 f.seek(max(0, size - 8192))
                 tail_text = f.read().decode('utf-8', errors='ignore')
             rate_limit_hits = tail_text.lower().count("you've hit your limit") + \
@@ -278,9 +270,80 @@ def scan_logs() -> dict:
             pass
 
     return {
-        'recent_errors':   recent_errors[-10:],    # Last 10 errors
-        'recent_warnings': recent_warnings[-10:],  # Last 10 warnings
+        'recent_errors':   recent_errors[-10:],
+        'recent_warnings': recent_warnings[-10:],
         'rate_limit_hits': rate_limit_hits,
+    }
+
+
+# ─── E. Data quality check ────────────────────────────────────────────────────
+
+def check_data_quality(target_date: date) -> dict:
+    """
+    Validate whether the latest scrape output makes sense.
+    Flags: all-SOLD-OUT run, all-None Expedia rates, XLSX missing.
+    """
+    csv_path  = DATA_DIR / f'rate_scroll_{target_date.strftime("%Y-%m-%d")}.csv'
+    xlsx_path = DATA_DIR / f'Rate_Shop_{target_date.strftime("%Y-%m-%d")}.xlsx'
+    flags = []
+
+    if not csv_path.exists():
+        return {'status': 'no_data', 'flags': ['No CSV for today — scraping has not run.']}
+
+    rows = []
+    try:
+        with open(csv_path, newline='') as f:
+            rows = list(csv.DictReader(f))
+    except Exception as e:
+        return {'status': 'error', 'flags': [f'CSV read error: {e}']}
+
+    if not rows:
+        return {'status': 'empty', 'flags': ['CSV exists but contains no rows.']}
+
+    # Get latest run
+    latest_ts = max(r['run_timestamp'] for r in rows)
+    latest = [r for r in rows if r['run_timestamp'] == latest_ts]
+    total_hotels = len(latest)
+
+    # Check 1: all hotels SOLD OUT in latest run?
+    sold_out_count = sum(
+        1 for r in latest
+        if r.get('is_sold_out', '').strip().lower() == 'true'
+    )
+    if total_hotels > 0 and sold_out_count == total_hotels:
+        flags.append(
+            f'ALL {total_hotels} hotels show SOLD OUT in latest run ({latest_ts}) — '
+            'likely Expedia bot detection or code bug. Check rate_scroll.py logs.'
+        )
+
+    # Check 2: all Expedia rates None in latest run?
+    rates_present = sum(
+        1 for r in latest
+        if r.get('lowest_rate_usd', '').strip() not in ('', 'None', 'null')
+    )
+    if total_hotels > 0 and rates_present == 0:
+        flags.append(
+            f'All Expedia rates are missing in latest run ({latest_ts}) — '
+            'scrape ran but returned no rate data.'
+        )
+    elif total_hotels > 0 and rates_present < total_hotels * 0.5:
+        flags.append(
+            f'Only {rates_present}/{total_hotels} hotels have Expedia rates in latest run — '
+            'partial scrape failure.'
+        )
+
+    # Check 3: XLSX exists?
+    if not xlsx_path.exists():
+        flags.append('Rate_Shop XLSX missing for today — not posted to Discord.')
+
+    return {
+        'status': 'flagged' if flags else 'ok',
+        'latest_run_ts':       latest_ts,
+        'total_hotels_in_run': total_hotels,
+        'sold_out_count':      sold_out_count,
+        'rates_present_count': rates_present,
+        'xlsx_exists':         xlsx_path.exists(),
+        'flags':               flags,
     }
 
 
@@ -295,12 +358,13 @@ def main():
     today = now.date()
 
     report = {
-        'generated_at': now.isoformat(),
-        'date':         today.isoformat(),
-        'scrape_24h':   analyze_scrape_runs(today),
+        'generated_at':  now.isoformat(),
+        'date':          today.isoformat(),
+        'scrape_24h':    analyze_scrape_runs(today),
         'system_health': check_system_health(),
-        'patterns_7d':  analyze_patterns_7d(today),
-        'log_scan':     scan_logs(),
+        'patterns_7d':   analyze_patterns_7d(today),
+        'log_scan':      scan_logs(),
+        'data_quality':  check_data_quality(today),
     }
 
     indent = 2 if args.pretty else None
