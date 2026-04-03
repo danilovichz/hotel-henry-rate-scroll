@@ -599,7 +599,8 @@ def write_xlsx(results: list, run_time: datetime, checkin_date: date):
         if not row_num:
             continue
 
-        is_sold = r.get('is_sold_out', False)
+        _sold_raw = r.get('is_sold_out', False)
+        is_sold = _sold_raw == 'True' if isinstance(_sold_raw, str) else bool(_sold_raw)
         exp_rate = r.get('lowest_rate_usd')
         ihg_rate = r.get('ihg_rate_usd')
 
@@ -735,7 +736,8 @@ def write_xlsx(results: list, run_time: datetime, checkin_date: date):
         kings  = _int(r.get('kings_available', 0))
         queens = _int(r.get('queens_available', 0))
         total  = _int(r.get('total_rooms_available', 0))
-        sold   = r.get('is_sold_out', False)
+        _sold_raw2 = r.get('is_sold_out', False)
+        sold   = _sold_raw2 == 'True' if isinstance(_sold_raw2, str) else bool(_sold_raw2)
 
         # Kings / Queens cell  (e.g.  "K: 3 | Q: 2")
         kq_c = ws.cell(row=row_num, column=exp_col)
