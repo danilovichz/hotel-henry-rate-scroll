@@ -565,6 +565,16 @@ async def rate_limit_monitor():
     elif not hit_limit:
         _rate_limit_alerted = False
 
+    # ── Task watchdog: restart any dead loops every 30 s ──────────────────────
+    if IS_MAC_MINI:
+        for task, name in [
+            (scheduled_scrape,   'scheduled_scrape'),
+            (daily_epc_scrape,   'daily_epc_scrape'),
+            (daily_health_check, 'daily_health_check'),
+        ]:
+            if not task.is_running():
+                log.warning(f"⚠️  Task '{name}' was not running — restarting now")
+                task.restart()
 
 
 @tasks.loop(minutes=30)
@@ -626,9 +636,22 @@ async def scheduled_scrape():
         return
 
     log.info(f"Scheduled scrape starting — {sd_now.strftime('%I:%M %p')} SD")
-    rates, xlsx_path = await asyncio.to_thread(live_scrape_tonight)
-    if not rates:
-        log.warning("Scheduled scrape returned no data — check rate_scroll.py logs")
+    try:
+        rates, xlsx_path = await asyncio.to_thread(live_scrape_tonight)
+        if not rates:
+            log.warning("Scheduled scrape returned no data — check rate_scroll.py logs")
+    except Exception as exc:
+        log.error(f"scheduled_scrape raised an exception: {exc}", exc_info=True)
+
+
+@scheduled_scrape.error
+async def scheduled_scrape_error(error: Exception):
+    log.error(f"scheduled_scrape loop error (task kept alive by watchdog): {error}", exc_info=True)
+
+
+@daily_epc_scrape.error
+async def daily_epc_scrape_error(error: Exception):
+    log.error(f"daily_epc_scrape loop error (task kept alive by watchdog): {error}", exc_info=True)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
