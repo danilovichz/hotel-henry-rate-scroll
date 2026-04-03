@@ -24,45 +24,27 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-SD_TZ       = ZoneInfo('America/Los_Angeles')
-SCRIPTS_DIR = Path(__file__).parent
-ENV_PATH    = Path('/Users/rentamac/dani/aios/.env')
-CHANNEL_ID  = '1485316410161893528'
-
-
-# ─── Load env ─────────────────────────────────────────────────────────────────
-
-def load_env() -> str:
-    """Load HENRY_DISCORD_WEBHOOK from ~/dani/aios/.env."""
-    if ENV_PATH.exists():
-        for line in ENV_PATH.read_text().splitlines():
-            line = line.strip()
-            if line.startswith('HENRY_DISCORD_WEBHOOK='):
-                return line.split('=', 1)[1].strip()
-    return os.getenv('HENRY_DISCORD_WEBHOOK', '')
+SD_TZ        = ZoneInfo('America/Los_Angeles')
+SCRIPTS_DIR  = Path(__file__).parent
+PYTHON311    = '/Users/rentamac/.homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/bin/python3.11'
+DISCORD_POST = SCRIPTS_DIR / 'discord_post.py'
 
 
 # ─── Discord posting ───────────────────────────────────────────────────────────
 
-def post_to_discord(webhook_url: str, message: str) -> int | None:
-    """Post a message to Discord via webhook. Returns HTTP status or None on error."""
-    import urllib.request
-    payload = json.dumps({
-        'content': message,
-        'allowed_mentions': {'parse': []},
-    }).encode()
-    req = urllib.request.Request(
-        webhook_url,
-        data=payload,
-        headers={'Content-Type': 'application/json'},
-        method='POST',
-    )
+def post_to_discord(message: str):
+    """Post a message to Discord #henry channel via discord_post.py helper."""
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status
+        result = subprocess.run(
+            [PYTHON311, str(DISCORD_POST), message],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            print(f'Discord post failed: {result.stderr}', file=sys.stderr)
+        return result.returncode == 0
     except Exception as e:
-        print(f'Discord post failed: {e}', file=sys.stderr)
-        return None
+        print(f'Discord post error: {e}', file=sys.stderr)
+        return False
 
 
 # ─── Run health check ─────────────────────────────────────────────────────────
@@ -117,9 +99,8 @@ def get_critical_issues(data: dict) -> list[str]:
     for flag in dq.get('flags', []):
         issues.append(f'🔴 **Data quality:** {flag}')
 
-    # 7-day pattern flags
-    for flag in data.get('patterns_7d', {}).get('flags', []):
-        issues.append(f'⚠️ **Pattern:** {flag}')
+    # Note: 7-day pattern flags are only shown in the daily brief, not 30-min alerts.
+    # Patterns are business trends, not technical failures requiring immediate attention.
 
     return issues
 
@@ -208,11 +189,6 @@ def main():
     parser.add_argument('--daily', action='store_true', help='Force full daily brief')
     args = parser.parse_args()
 
-    webhook = load_env()
-    if not webhook:
-        print('ERROR: HENRY_DISCORD_WEBHOOK not found in env', file=sys.stderr)
-        sys.exit(1)
-
     now = datetime.now(SD_TZ)
 
     # Auto-detect 7am daily brief window (7:00–7:29 AM SD)
@@ -221,19 +197,19 @@ def main():
     data = run_health_check()
 
     if 'error' in data:
-        post_to_discord(webhook, f'🔴 **Auto health check failed:** {data["error"]}')
+        post_to_discord(f'🔴 **Auto health check failed:** {data["error"]}')
         sys.exit(1)
 
     if is_daily:
         message = build_daily_brief(data, now)
-        post_to_discord(webhook, message)
+        post_to_discord(message)
         print(f'[{now.strftime("%H:%M")} SD] Daily brief posted')
     else:
         issues = get_critical_issues(data)
         if issues:
             header = f'🚨 **Henry Alert** — {now.strftime("%I:%M %p")} SD\n'
             message = header + '\n'.join(issues)
-            post_to_discord(webhook, message)
+            post_to_discord(message)
             print(f'[{now.strftime("%H:%M")} SD] Alert posted: {len(issues)} issue(s)')
         else:
             print(f'[{now.strftime("%H:%M")} SD] All clear — no alert posted')
